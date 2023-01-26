@@ -3,6 +3,7 @@ import os
 from lxml import etree
 from Levenshtein import distance as lev
 from datetime import datetime
+from typing import List, Tuple
 
 
 def prettifyString(string):
@@ -15,14 +16,12 @@ def prettifyString(string):
 
 
 def lev_distance(row):
-    ## Calculate lev distance of df row
     if row[6] == "" and row[7] == "":
         return 0
     return lev(row[6], row[7]) / (max(len(row[6]), len(row[7])))
 
 
 def jaccard_similarity(row):
-    ## Calculate jaccard sim of a df row
     if row[6] == "" and row[7] == "":
         return 0
     # convert to set
@@ -33,126 +32,143 @@ def jaccard_similarity(row):
     return j
 
 
-def compare_years(year1, year2, help_list):
-    path = "UC 3/etl_generated/"
-    folder1 = f"{path}/{year1}"
-    folder2 = f"{path}/{year2}"
+xml_namespace = {"x": "http://autosar.org/schema/r4.0"}
 
-    # Comparing files in year folder
-    all_files_year1 = os.listdir(folder1)
-    all_files_year2 = os.listdir(folder2)
+
+def check_if_subfolders_identical(year1_folder, year2_folder):
+    """This function checks wether the same subfolders are in the topfolder of year1 and the topfolder of year2"""
+    all_files_year1 = os.listdir(year1_folder)
+    all_files_year2 = os.listdir(year2_folder)
     if not all_files_year1 == all_files_year2:
-        raise ValueError(f"FolderList not the same for {year1} and {year2}")
-    date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    os.mkdir(f"./data/{date}")
-    counter = 1
-    for folder in os.listdir(folder1):
-        for file in os.listdir(f"{folder1}/{folder}/zz_generated"):
-            if file not in os.listdir(f"{folder2}/{folder}/zz_generated"):
-                raise ValueError(f"{file} not in {folder2}/{folder}/zz_generated")
+        raise ValueError(
+            f"FolderList not the same for {year1_folder} and {year2_folder}"
+        )
 
-            ## Compare files
-            file1 = f"{folder1}/{folder}/zz_generated/{file}"
-            file2 = f"{folder2}/{folder}/zz_generated/{file}"
-            # with open(file1, "r") as f:
-            #     handlerA = f.read()
-            # with open(file2, "r") as f:
-            #     handlerB = f.read()
-            treeA = etree.parse(
-                file1
-            )  # "UC 3/etl_generated/R21-11/SWS_CANInterface_012/zz_generated/AUTOSAR_SWS_CANInterface_resolved.arxml")
-            treeB = etree.parse(
-                file2
-            )  # "UC 3/etl_generated/R22-11/SWS_CANInterface_012/zz_generated/AUTOSAR_SWS_CANInterface_resolved.arxml")
 
-            idsA = treeA.xpath(
-                f"//*[self::x:TRACE or self::x:TRACEABLE-TABLE]/x:SHORT-NAME/text()",
-                namespaces={"x": "http://autosar.org/schema/r4.0"},
+def check_if_file_exists_for_next_year(file, year2_folder, subfolder):
+    """This function checks wether a file for a certain year does exist for the next year"""
+    if file not in os.listdir(f"{year2_folder}/{subfolder}/zz_generated"):
+        raise ValueError(f"{file} not in {year2_folder}/{subfolder}/zz_generated")
+
+
+def create_new_dir_to_save_data():
+    """This fucntion creates a new directory named after the current date and time and returns the
+    path to this directory"""
+    path_to_dir = f"./data/{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
+    os.mkdir(path_to_dir)
+    return path_to_dir
+
+
+def get_text_and_structure(id_list, xml_tree):
+    texts = []
+    structures = []
+
+    for id in id_list:
+        texts.append(
+            prettifyString(
+                xml_tree.xpath(
+                    f"//x:SHORT-NAME[./text() = '{id}']/..//x:L-1//text()",
+                    namespaces=xml_namespace,
+                )
             )
-            idsB = treeB.xpath(
-                f"//*[self::x:TRACE or self::x:TRACEABLE-TABLE]/x:SHORT-NAME/text()",
-                namespaces={"x": "http://autosar.org/schema/r4.0"},
+        )
+        structures.append(
+            [
+                elem.tag[32:]
+                for elem in xml_tree.xpath(
+                    f"//x:SHORT-NAME[./text() = '{id}']/../..//*",
+                    namespaces=xml_namespace,
+                )
+            ]
+        )
+    return texts, structures
+
+
+def compare_years(year1: str, year2: str, df_list: Tuple, path_to_folder: str):
+    """This function dientifies the changes for two years and writes them as a DF to a list"""
+    year1_folder = f"{path_to_folder}/{year1}"
+    year2_folder = f"{path_to_folder}/{year2}"
+
+    check_if_subfolders_identical(year1_folder, year2_folder)
+    path_to_dir = create_new_dir_to_save_data()
+    for subfolder in os.listdir(year1_folder):
+        for document in os.listdir(f"{year1_folder}/{subfolder}/zz_generated"):
+            check_if_file_exists_for_next_year(document, year2_folder, subfolder)
+
+            # Get XML trees of entire document
+            xml_tree_year1 = etree.parse(
+                f"{year1_folder}/{subfolder}/zz_generated/{document}"
+            )
+            xml_tree_year2 = etree.parse(
+                f"{year2_folder}/{subfolder}/zz_generated/{document}"
             )
 
-            dfA = pd.DataFrame({"idsA": idsA})
-            dfB = pd.DataFrame({"idsB": idsB})
-            df = pd.merge(dfA, dfB, how="outer", left_on="idsA", right_on="idsB")
-            df["type"] = "unchanged"
-            df["type"][df.idsB.isna()] = "deleted"
-            df["type"][df.idsA.isna()] = "new"
+            # Search for all ids in document
+            xml_search_ids_string = (
+                f"//*[self::x:TRACE or self::x:TRACEABLE-TABLE]/x:SHORT-NAME/text()"
+            )
+
+            ids_year1 = xml_tree_year1.xpath(
+                xml_search_ids_string, namespaces=xml_namespace
+            )
+            ids_year2 = xml_tree_year2.xpath(
+                xml_search_ids_string, namespaces=xml_namespace
+            )
+
+            # Merge together all the ids into one DF (with NAs)
+            df = pd.merge(
+                pd.DataFrame({"ids_year1": ids_year1}),
+                pd.DataFrame({"ids_year2": ids_year2}),
+                how="outer",
+                left_on="ids_year1",
+                right_on="ids_year2",
+            )
+
+            # Add years and document to DF
             df["previous_year"] = year1
             df["current_year"] = year2
-            df["document_name"] = file
+            df["document_name"] = document
 
-            textA = []
-            structureA = []
-            for id in df["idsA"]:
-                textA.append(
-                    treeA.xpath(
-                        f"//x:SHORT-NAME[./text() = '{id}']/..//x:L-1//text()",
-                        namespaces={"x": "http://autosar.org/schema/r4.0"},
-                    )
-                )
-                structureA.append(
-                    [
-                        elem.tag[32:]
-                        for elem in treeA.xpath(
-                            f"//x:SHORT-NAME[./text() = '{id}']/../..//*",
-                            namespaces={"x": "http://autosar.org/schema/r4.0"},
-                        )
-                    ]
-                )
+            # Add change types to DF
+            df["type"] = "unchanged"
+            df["type"][df.ids_year2.isna()] = "deleted"
+            df["type"][df.ids_year1.isna()] = "new"
 
-            textB = []
-            structureB = []
-            for id in df["idsB"]:
-                textB.append(
-                    treeB.xpath(
-                        f"//x:SHORT-NAME[./text() = '{id}']/..//x:L-1//text()",
-                        namespaces={"x": "http://autosar.org/schema/r4.0"},
-                    )
-                )
-                structureB.append(
-                    [
-                        elem.tag[32:]
-                        for elem in treeB.xpath(
-                            f"//x:SHORT-NAME[./text() = '{id}']/../..//*",
-                            namespaces={"x": "http://autosar.org/schema/r4.0"},
-                        )
-                    ]
-                )
+            # get entire structure and text for all ids
+            year1_texts, year1_structures = get_text_and_structure(
+                df["ids_year1"], xml_tree_year1
+            )
+            year2_texts, year2_structures = get_text_and_structure(
+                df["ids_year2"], xml_tree_year2
+            )
+            df["text_year1"] = year1_texts
+            df["text_year2"] = year2_texts
+            df["structure_year1"] = year1_structures
+            df["structure_year2"] = year2_structures
 
-            df["Text Release A"] = [prettifyString(x) for x in textA]
-            df["Text Release B"] = [prettifyString(x) for x in textB]
-
-            df["structureA"] = structureA
-            df["structureB"] = structureB
-
+            # Apply Jaccard and Levenstein Method for String comparison
             df["Change Rate Jaccard"] = 1 - df.apply(jaccard_similarity, axis=1)
             df["Change Rate Edit Distance"] = df.apply(lev_distance, axis=1)
 
-            helpCol = df["type"].copy()
             df.loc[
-                (df["Change Rate Edit Distance"] != 0) & (helpCol == "unchanged"),
+                (df["Change Rate Edit Distance"] != 0) & (df["type"] == "unchanged"),
                 "type",
             ] = "changed"
 
-            df.to_pickle(f"./data/{date}/df_{file}.pkl")
-            help_list.append(df)
+            # Save DFs
+            df.to_pickle(f"{path_to_dir}/df_{document}.pkl")
+            df_list.append(df)
             print(
-                f"Compared {file1} and {file2}, ({counter}/{len(all_files_year1)} documents)"
+                f"Compared {year1_folder}/{subfolder}/zz_generated/{document} and {year2_folder}/{subfolder}/zz_generated/{document}"
             )
-            counter = counter + 1
 
 
-def run_all_dirs(years):
-    # years = ["R20-11", "R21-11", "R22-11"]
-    path = "UC 3/etl_generated/"
-    folder1 = f"{path}/R20-11"
-    folder2 = f"{path}/R21-11"
-    help_list = []
+def create_change_df(years: List[Tuple[str, str]], path_to_years_folder: str):
+    """This function receives a List of year tuples and the path to folder in which the year directories can be founds,
+    compares the files in those directories and writes the results into a DF"""
+    df_list = []
 
-    for idx in range(0, len(years)):
-        if len(years) > idx + 1:
-            print(compare_years(years[idx], years[idx + 1], help_list))
-    return pd.concat(help_list)
+    for year_tuple in years:
+        compare_years(year_tuple[0], year_tuple[1], df_list, path_to_years_folder)
+
+    return pd.concat(df_list)
