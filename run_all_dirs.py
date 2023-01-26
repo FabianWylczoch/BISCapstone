@@ -25,24 +25,63 @@ def compare_years(year1, year2, help_list):
             file2 = f"{folder2}/{folder}/zz_generated/{file}"
             print(f"Comapring {file1} and {file2}")
             with open(file1, "r") as f:
-                data1 = f.read()
+                handlerA = f.read()
             with open(file2, "r") as f:
-                data2 = f.read()
+                handlerB = f.read()
 
-            list_of_all_ids1 = bs(data1, "lxml-xml").find_all("SHORT-NAME")
-            list_of_all_ids2 = bs(data2, "lxml-xml").find_all("SHORT-NAME")
-            df1 = pd.DataFrame({"previous_ids": list_of_all_ids1})
-            df2 = pd.DataFrame({"current_ids": list_of_all_ids2})
-            df_merged = pd.merge(
-                df1, df2, how="outer", left_on="previous_ids", right_on="current_ids"
-            )
+            soupA = bs(handlerA, "lxml-xml")
+            list_of_all_idsA = soupA.find_all("SHORT-NAME")
+            soupB = bs(handlerB, "lxml-xml")
+            list_of_all_idsB = soupB.find_all("SHORT-NAME")
+
+            list_of_all_idsA = [id.getText() for id in list_of_all_idsA]
+            list_of_all_idsB = [id.getText() for id in list_of_all_idsB]
+
+            dfA = pd.DataFrame({"idsA": list_of_all_idsA})
+            dfB = pd.DataFrame({"idsB": list_of_all_idsB})
+            df_merged = pd.merge(dfA, dfB, how="outer", left_on="idsA", right_on="idsB")
             df_merged["type"] = "unchanged"
-            df_merged["type"][df_merged.current_ids.isna()] = "delete"
-            df_merged["type"][df_merged.previous_ids.isna()] = "new"
+            df_merged["type"][df_merged.idsB.isna()] = "deleted"
+            df_merged["type"][df_merged.idsA.isna()] = "new"
             df_merged["previous_year"] = year1
             df_merged["current_year"] = year2
             df_merged["document_name"] = file
-            help_list.append(df_merged)
+            df = df_merged.copy()
+            df["Text Release A"] = ""
+            df["Text Release B"] = ""
+
+            for row in df.iterrows():
+                if (soupA.find("SHORT-NAME", string=row[1][0])) and (
+                    not pd.isna(row[1][0])
+                ):
+                    df["Text Release A"].iloc[row[0]] = [
+                        x.getText()
+                        for x in soupA.find(
+                            "SHORT-NAME", string=row[1][0]
+                        ).parent.find_all("L-1")
+                    ]
+
+                # soup = soupB
+                # for row in df.iterrows():
+                if (soupB.find("SHORT-NAME", string=row[1][1])) and (
+                    not pd.isna(row[1][1])
+                ):
+                    df["Text Release B"].iloc[row[0]] = [
+                        x.getText()
+                        for x in soupB.find(
+                            "SHORT-NAME", string=row[1][1]
+                        ).parent.find_all("L-1")
+                    ]
+            # df_merged_2 = df.copy()
+            # df_merged_2 = df_merged_2[df_merged_2["type"] == "unchanged"]
+            # df_merged_2["Difference in String"] = (
+            #     df_merged_2["Text Release A"] != df_merged_2["Text Release B"]
+            # )
+
+            # no_changed = df_merged_2['Difference in String'][df_merged_2['Difference in String']==True].count()
+            # no_total = df_merged_2[df_merged_2['type']=='unchanged']['Difference in String'].count()
+            df.to_pickle(f"./data/df_{file}.pkl")
+            help_list.append(df)
 
 
 def run_all_dirs(years):
